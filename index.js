@@ -983,4 +983,3 @@ function getHomePage() {
     }
   })
 }
-// --- MÓDOSÍTOTT getHomePage() FUNKCIÓ VÉGE ---
