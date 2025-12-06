@@ -9,7 +9,7 @@ addEventListener('fetch', event => {
 const config = {
   // Support multiple domains, you should modifiy this if you wish to deploy it to your own Cloudflare Worker.
   proxyDomains: ['tubicf.internetezoo.workers.dev'], // <--- MÓDOSÍTVA ERRE A DOMAINRE
-  separator: '', // <--- MÓDOSÍTVA! Az üres string teszi lehetővé a /https://... formátumot.
+  separator: '', // <--- Tiszta URL formátumhoz beállítva: /https://...
   homepage: true, // Whether to enable the homepage
   allowedDomains: [], // Domain whitelist, set to [] to allow all
 
@@ -17,7 +17,7 @@ const config = {
   // Browser emulation settings
   browserEmulation: {
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
-    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image:apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
     acceptLanguage: 'en-US,en;q=0.9',
     acceptEncoding: 'gzip, deflate, br',
     connection: 'keep-alive',
@@ -70,8 +70,8 @@ async function handleRequest(request) {
   const url = new URL(request.url)
   const isProxyHost = config.proxyDomains.includes(url.host)
   
-  // Lekérjük a Worker kimenő IP-jét a DFW kényszerítéssel
-  const egressGeoData = await getEgressIP('DFW');
+  // Lekérjük a Worker kimenő IP-jét az IAD kényszerítéssel
+  const egressGeoData = await getEgressIP('IAD'); // 🚨 CSERÉLVE DFW-ről IAD-re
   const ingressGeoCountry = request.cf.country || 'N/A'; // Bejövő Geo adatok
   
   // IP infó HTML blokk létrehozása
@@ -83,25 +83,17 @@ async function handleRequest(request) {
             <li><strong>Kimenő (Worker ➡️ Cél) IP:</strong> <span style="color: ${egressGeoData.country === 'US' ? 'green' : 'red'}; font-weight: bold;">${egressGeoData.ip}</span></li>
             <li><strong>Kimenő (Cél) Régió:</strong> ${egressGeoData.city}, ${egressGeoData.country}</li>
         </ul>
-        <p style="margin: 5px 0 0 0; font-style: italic; color: #555;">(A kimenő IP a kód szerint DFW-re (USA) van kényszerítve.)</p>
+        <p style="margin: 5px 0 0 0; font-style: italic; color: #555;">(A kimenő IP a kód szerint IAD-ra (USA) van kényszerítve.)</p>
     </div>
   `;
   
   
   // If the request is for the proxy root
   if (isProxyHost && url.pathname === '/') {
-    // a) When no query-string is present we treat it as a genuine homepage request
     if (config.homepage && !url.search) {
-      return getHomePage(ipInfoHtml) // Adjuk át az infó blokkot
+      return getHomePage(ipInfoHtml)
     }
 
-    /* b) When a query-string exists (e.g. "/?q=search" coming from a proxied
-      site like DuckDuckGo) we attempt to determine the intended target by
-      inspecting the Referer header, which still contains the full proxied
-      URL including the original host. Using that information we rebuild the
-      real destination so the request will be forwarded correctly instead of
-      falling back to the homepage.
-    */
     if (url.search) {
       const ref = request.headers.get('Referer') || ''
       try {
@@ -109,14 +101,13 @@ async function handleRequest(request) {
         const rawPath = refURL.pathname.substring(1)
         const sep = config.separator
         let path = rawPath
-        // Mivel a separator üres, ez a rész nem módosul, de a többi kód megtartja
         if (rawPath.startsWith(sep)) {
           path = rawPath.substring(sep.length)
         }
         const inner = path
         if (inner.startsWith('http://') || inner.startsWith('https://')) {
           const base = new URL(inner)
-          const targetStr = `${base.origin}${url.search}` // e.g. https://duckduckgo.com/?q=foo
+          const targetStr = `${base.origin}${url.search}`
           url.pathname = '/' + config.separator + targetStr
         }
       } catch (_) {
@@ -130,18 +121,14 @@ async function handleRequest(request) {
   try {
     // Determine target URL
     if (isProxyHost) {
-      // Extract target URL from path
       if (url.pathname === '/proxy' && url.searchParams.has('url')) {
-        // Handle /proxy?url=https://example.com format
         const urlParam = url.searchParams.get('url')
         targetURL = new URL(urlParam)
       } else if (url.pathname.startsWith('/')) {
-        // Handle /------https://example.com or /https://example.com format
         const rawPath = url.pathname.substring(1)
         const sep = config.separator
         let path = rawPath
         
-        // Mivel a separator üres, a path egyből az URL-el kezdődik (https://...)
         if (rawPath.startsWith(sep)) {
           path = rawPath.substring(sep.length)
         }
@@ -149,10 +136,6 @@ async function handleRequest(request) {
         if (path.startsWith('http://') || path.startsWith('https://')) {
           targetURL = new URL(path)
         } else if (path) {
-          /*
-            Handle relative paths...
-            A logika itt is a Referer-re támaszkodik a bázis URL megtalálásához.
-          */
           let resolved = null
           const ref = request.headers.get('Referer') || ''
           if (ref.startsWith(`https://${url.host}/`)) {
@@ -161,14 +144,13 @@ async function handleRequest(request) {
             if (refInner.startsWith('http://') || refInner.startsWith('https://')) {
               try {
                 const baseRefURL = new URL(refInner)
-                resolved = new URL(path, baseRefURL) // relative resolution
+                resolved = new URL(path, baseRefURL)
               } catch {}
             }
           }
           if (resolved) {
             targetURL = resolved
           } else {
-            // Try to rebuild using Referer (root-relative request like "/?q=...")
             let rebuilt = null
             const ref = request.headers.get('Referer') || ''
             if (ref.startsWith(`https://${url.host}/`)) {
@@ -185,22 +167,17 @@ async function handleRequest(request) {
             
             if (rebuilt) {
               targetURL = rebuilt
-              // No need to modify pathname further
             } else if (!path.includes('.') && url.search === '') {
-              // This is a plain keyword with no search string
               targetURL = new URL('https://duckduckgo.com/?q=' + encodeURIComponent(path))
             } else if (!path.includes('.')) {
-              // Plain keyword + existing search parameters appended to keyword search
               const q = encodeURIComponent(path)
               const ddg = new URL('https://duckduckgo.com/?q=' + q + '&' + url.search.substring(1))
               targetURL = ddg
             } else if (url.searchParams.has('q')) {
-              // Fallback to DuckDuckGo search when 'q' parameter present
               const ddgURL = new URL('https://duckduckgo.com/')
               url.searchParams.forEach((value, key) => ddgURL.searchParams.append(key, value))
               targetURL = ddgURL
             } else {
-              // Treat as domain with implied https
               try {
                 targetURL = new URL('https://' + path)
               } catch {
@@ -209,22 +186,16 @@ async function handleRequest(request) {
             }
           }
         } else {
-          /*
-            Empty path with query-string -> DuckDuckGo search
-          */
           if (url.searchParams.has('q')) {
-            // Preserve all parameters so that bangs etc. keep working
             const ddgURL = new URL('https://duckduckgo.com/')
             url.searchParams.forEach((value, key) => ddgURL.searchParams.append(key, value))
             targetURL = ddgURL
           } else {
-            // Empty path with no query – invalid usage
             return new Response('Invalid URL request', { status: 400 })
           }
         }
       }
     } else {
-      // Use request URL directly
       targetURL = url
     }
     
@@ -282,10 +253,8 @@ async function handleRequest(request) {
   
   
   // 🇺🇸 RÉGIÓ FELÜLÍRÁSA A CÉLOLDAL FELÉ 🇺🇸
-  // Beállítjuk a 'CF-IPCountry' fejlécet 'US' értékre
   const desiredCountryCode = 'US'; 
   newHeaders.set('CF-IPCountry', desiredCountryCode); 
-  // -------------------------
 
   
   // Essential headers for the target site
@@ -309,8 +278,8 @@ async function handleRequest(request) {
     redirect: 'manual', // Handle redirects manually
     // 🟢 RÉGIÓ KÉNYSZERÍTÉSE AZ USA-ra
     cf: {
-      // 'DFW' (Dallas) kényszerítése, hogy a Worker egy USA adatközpontból indítsa a kimenő kérést.
-      colo: 'DFW' 
+      // 'IAD' (Ashburn) kényszerítése az USA adatközpont használatára.
+      colo: 'IAD' // 🚨 CSERÉLVE DFW-ről IAD-re
     }
   })
 
@@ -324,11 +293,8 @@ async function handleRequest(request) {
       const location = newRespHeaders.get('Location')
       if (location) {
         try {
-          // Handle absolute and relative URLs
           const redirectURL = new URL(location, targetURL)
-          // Build new proxy URL, using current accessed domain and custom separator
           const currentProxyDomain = url.host
-          // A separator már üres, a link /https://... lesz
           const newLocation = `https://${currentProxyDomain}/${config.separator}${redirectURL.href}`
           newRespHeaders.set('Location', newLocation)
         } catch (error) {
@@ -340,7 +306,6 @@ async function handleRequest(request) {
     // Copy all response cookies
     const setCookieHeaders = response.headers.getAll ? response.headers.getAll('Set-Cookie') : null
     if (setCookieHeaders) {
-      // Multiple cookie support for browsers
       setCookieHeaders.forEach(cookie => {
         newRespHeaders.append('Set-Cookie', cookie)
       })
@@ -349,8 +314,8 @@ async function handleRequest(request) {
     // Modify CORS related headers
     newRespHeaders.delete('Content-Security-Policy')
     newRespHeaders.delete('Content-Security-Policy-Report-Only')
-    newRespHeaders.delete('X-Frame-Options') // Allow framing
-    newRespHeaders.delete('X-Content-Type-Options') // Remove nosniff
+    newRespHeaders.delete('X-Frame-Options')
+    newRespHeaders.delete('X-Content-Type-Options')
     newRespHeaders.set('Access-Control-Allow-Origin', '*')
     newRespHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH')
     newRespHeaders.set('Access-Control-Allow-Headers', '*')
@@ -368,7 +333,6 @@ async function handleRequest(request) {
     
     // Rewrite links in HTML content
     if (contentType.includes('text/html') || contentType.includes('application/xhtml+xml')) {
-      // Use current accessed domain as proxy domain
       const currentProxyDomain = url.host
       
       let rewriter = new HTMLRewriter()
@@ -394,11 +358,8 @@ async function handleRequest(request) {
       // Handle inline styles and attributes with URLs
       rewriter = rewriter.on('*[style]', new StyleAttributeRewriter(targetURL, currentProxyDomain))
       
-      // Add Wikipedia specific handlers if needed
       if (isWikipediaSite) {
-        // Wikipedia uses data-src for lazy loading
         rewriter = rewriter.on('img[data-src]', new LinkRewriter(targetURL, 'data-src', currentProxyDomain))
-        // Handle Wikipedia's specific style elements
         rewriter = rewriter.on('style', new StyleElementRewriter(targetURL, currentProxyDomain))
       }
       
@@ -424,7 +385,6 @@ async function handleRequest(request) {
       const currentProxyDomain = url.host
       const jsText = await response.text()
       
-      // Very simplified JS URL rewriting - this could be enhanced
       const rewrittenJS = rewriteJavaScript(jsText, targetURL, currentProxyDomain)
       
       newResponse = new Response(rewrittenJS, {
@@ -532,10 +492,7 @@ class BodyRewriter {
       this.injectFallbackScripts(element);
     }
     
-    // Stop processing body after injection
-    element.onEndTag(endTag => {
-        // Here we ensure that the content is processed correctly
-    });
+    element.onEndTag(endTag => {});
   }
 
   injectFallbackScripts(element) {
@@ -543,6 +500,7 @@ class BodyRewriter {
       <script>
         // Add fallback mechanism for images and other resources that fail to load
         document.addEventListener('DOMContentLoaded', function() {
+          const separator = '${config.separator}'; // Get separator for JS logic
           // Fallback for images
           document.querySelectorAll('img').forEach(img => {
             if (!img.hasAttribute('data-original-src')) {
@@ -558,8 +516,8 @@ class BodyRewriter {
             if (originalUrl.includes(location.host)) {
               try {
                 // Remove host part to get original proxy path
-                const parts = new URL(originalUrl).pathname.substring(1).split(config.separator);
-                originalUrl = parts.length > 1 ? parts.join(config.separator) : originalUrl;
+                const parts = new URL(originalUrl).pathname.substring(1).split(separator);
+                originalUrl = parts.length > 1 ? parts.join(separator) : originalUrl;
               } catch(e) {}
             }
             
@@ -930,7 +888,7 @@ function getHomePage(ipInfoHtml) {
   <div class="container">
     <h1>CF Proxy Szolgáltatás</h1>
     
-    ${ipInfoHtml} <p class="region-info">Kimenő IP régió kényszerítve: USA (Dallas - DFW)</p>
+    ${ipInfoHtml} <p class="region-info">Kimenő IP régió kényszerítve: USA (Ashburn - IAD)</p>
 
     <form id="proxyForm" onsubmit="navigateToProxy(event)">
       <div class="input-group">
