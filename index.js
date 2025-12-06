@@ -265,6 +265,11 @@ async function handleRequest(request) {
     headers: newHeaders,
     body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : null,
     redirect: 'manual', // Handle redirects manually
+    // 🟢 RÉGIÓ KÉNYSZERÍTÉSE AZ USA-ra
+    cf: {
+      // 'DFW' (Dallas) kényszerítése, hogy a Worker egy USA adatközpontból indítsa a kimenő kérést.
+      colo: 'DFW' 
+    }
   })
 
   try {
@@ -902,7 +907,7 @@ function getHomePage() {
   <div class="container">
     <h1>CF Proxy Szolgáltatás</h1>
     
-    <p class="region-info">Beállított kimenő IP régió: USA (CF-IPCountry: US)</p>
+    <p class="region-info">Kimenő IP régió kényszerítve: USA (Dallas - DFW)</p>
 
     <form id="proxyForm" onsubmit="navigateToProxy(event)">
       <div class="input-group">
