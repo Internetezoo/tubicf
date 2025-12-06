@@ -239,8 +239,8 @@ async function handleRequest(request) {
   newHeaders.set('Sec-Fetch-User', config.browserEmulation.secFetchUser)
   
   
-  // 🇺🇸 RÉGIÓ FELÜLÍRÁSA 🇺🇸
-  // Beállítjuk a 'CF-IPCountry' fejlécet 'US' értékre, hogy a céloldal azt higgye, a kérés az USA-ból érkezik.
+  // 🇺🇸 RÉGIÓ FELÜLÍRÁSA A CÉLOLDAL FELÉ 🇺🇸
+  // Beállítjuk a 'CF-IPCountry' fejlécet 'US' értékre
   const desiredCountryCode = 'US'; 
   newHeaders.set('CF-IPCountry', desiredCountryCode); 
   // -------------------------
@@ -268,6 +268,7 @@ async function handleRequest(request) {
     // 🟢 RÉGIÓ KÉNYSZERÍTÉSE AZ USA-ra
     cf: {
       // 'DFW' (Dallas) kényszerítése, hogy a Worker egy USA adatközpontból indítsa a kimenő kérést.
+      // Ez a Cloudflare Workers ajánlott módszere a kimenő régió beállítására.
       colo: 'DFW' 
     }
   })
