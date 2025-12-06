@@ -1,11 +1,11 @@
-addEventListener('fetch', event => {
+AddEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request))
 })
 
 // Configuration options
 const config = {
   // Support multiple domains, you should modifiy this if you wish to deploy it to your own Cloudflare Worker.
-  proxyDomains: ['tubicf.internetezoo.workers.dev'], // MÓDOSÍTVA AZ ÖN DOMAINJÉRE
+  proxyDomains: ['tubicf.internetezoo.workers.dev'], // <--- MÓDOSÍTVA ERRE A DOMAINRE
   separator: '------', // Delimiter between worker path and real target URL
   homepage: true, // Whether to enable the homepage
   allowedDomains: [], // Domain whitelist, set to [] to allow all
@@ -240,7 +240,7 @@ async function handleRequest(request) {
   
   
   // 🇺🇸 RÉGIÓ FELÜLÍRÁSA (HEADER) 🇺🇸
-  // Beállítjuk a 'CF-IPCountry' fejlécet 'US' értékre
+  // Beállítjuk a 'CF-IPCountry' fejlécet 'US' értékre, hogy a céloldal azt higgye, a kérés az USA-ból érkezik.
   const desiredCountryCode = 'US'; 
   newHeaders.set('CF-IPCountry', desiredCountryCode); 
   // -------------------------
@@ -265,7 +265,7 @@ async function handleRequest(request) {
     headers: newHeaders,
     body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : null,
     redirect: 'manual', // Handle redirects manually
-    // 🇺🇸 FORCE US EXIT LOCATION - JAVÍTVA 'ord'-re
+    // 🇺🇸 FORCE US EXIT LOCATION - Visszaállítva 'ord'-re 
     cf: {
       colo: 'ord' // Kényszeríti a Cloudflare-t a Chicago (USA) adatközpont használatára (központi USA)
     }
@@ -472,7 +472,7 @@ async function handleRequest(request) {
       }
     })
   }
-} 
+}
 
 // Unified link rewrite handling with better URL handling
 class LinkRewriter {
@@ -558,7 +558,7 @@ class SrcsetRewriter {
           // Return new URL with size if exists
           return size ? `${newURL} ${size}` : newURL
         } catch (e) {
-          return part // Keep original if can't parse
+          return part // Keep original if can's parse
         }
       })
       
@@ -806,52 +806,3 @@ class HeadRewriter {
             link.addEventListener('click', function(e) {
               // Allow middle-click and ctrl+click to work normally
               if (e.button !== 0 || e.ctrlKey || e.metaKey) return;
-              
-              e.preventDefault();
-              link.setAttribute('rel', 'noreferrer noopener');
-              window.open(link.href, '_blank');
-            });
-          });
-          
-          // Add Wikipedia specific fixes
-          if (document.querySelector('body.mediawiki')) {
-            // Force load lazy images
-            document.querySelectorAll('img[data-src]').forEach(img => {
-              if (!img.src && img.dataset.src) {
-                img.src = img.dataset.src;
-              }
-            });
-            
-            // Fix any inline styles with backgrounds
-            document.querySelectorAll('[style*="background"]').forEach(el => {
-              // Handle any broken background images
-              if (el.style.backgroundImage) {
-                el.setAttribute('data-original-bg', el.style.backgroundImage);
-              }
-            });
-          }
-        });
-      </script>
-    `, {html: true});
-  }
-}
-
-function getHomePage() {
-  return new Response(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Web Proxy Service</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      max-width: 800px;
-      margin: 0 auto;
-      padding: 20px;
-      text-align: center;
-      line-height: 1.6;
-      color: #333;
-      background-color: #f8f9fa;
-    }
-    .
