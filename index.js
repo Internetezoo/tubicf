@@ -500,3 +500,6 @@ class LinkRewriter {
       if (this.attributeName === 'src' && element.tagName === 'img') {
         const originalSrc = absoluteURL.href
         element.setAtt
+ }
+  })
+}
