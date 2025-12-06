@@ -239,8 +239,8 @@ async function handleRequest(request) {
   newHeaders.set('Sec-Fetch-User', config.browserEmulation.secFetchUser)
   
   
-  // 🇺🇸 RÉGIÓ FELÜLÍRÁSA 🇺🇸
-  // Beállítjuk a 'CF-IPCountry' fejlécet 'US' értékre, hogy a céloldal azt higgye, a kérés az USA-ból érkezik.
+  // 🇺🇸 RÉGIÓ FELÜLÍRÁSA (HEADER) 🇺🇸
+  // Beállítjuk a 'CF-IPCountry' fejlécet 'US' értékre
   const desiredCountryCode = 'US'; 
   newHeaders.set('CF-IPCountry', desiredCountryCode); 
   // -------------------------
@@ -265,9 +265,9 @@ async function handleRequest(request) {
     headers: newHeaders,
     body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : null,
     redirect: 'manual', // Handle redirects manually
-    // 🇺🇸 FORCE US EXIT LOCATION - EZ A JAVÍTÁS
+    // 🇺🇸 FORCE US EXIT LOCATION - JAVÍTVA 'lax'-re
     cf: {
-      colo: 'sjc' // Kényszeríti a Cloudflare-t a San Jose (USA) adatközpont használatára
+      colo: 'lax' // Kényszeríti a Cloudflare-t a Los Angeles (USA) adatközpont használatára (alternatíva)
     }
   })
 
@@ -932,7 +932,7 @@ function getHomePage() {
     
     <p class="example">
     Examples: 
-    <a href="https://tubicf.internetezoo.workers.dev/------https://www.tsukuba.ac.jp/">tsukubax.ac.jp</a>, 
+    <a href="https://tubicf.internetezoo.workers.dev/------https://www.tsukuba.ac.jp/">tsukuba.ac.jp</a>, 
     <a href="https://tubicf.internetezoo.workers.dev/------https://www.jlu.edu.cn/">jlu.edu.cn</a>, 
     <a href="https://tubicf.internetezoo.workers.dev/------https://news.ycombinator.com">ycombinator.com</a>, 
     <a href="https://tubicf.internetezoo.workers.dev/------https://www.example.com">example.com</a>, 
