@@ -2,7 +2,7 @@
 const IP_CHECK_API = 'https://ipinfo.io/json';
 
 // USA Adatközpontok listája, amiket végigpróbálunk a legjobb eredmény érdekében
-const US_COLOS_TO_TRY = ['IAD', 'DFW', 'LAX', 'SJC', 'EWR'];
+const US_COLOS_TO_TRY = ['IAD', 'DFW', 'LAX', 'SJC', 'EWR', 'BOS', 'ATL']; // Bővített lista a jobb esély érdekében
 
 addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request))
@@ -11,7 +11,7 @@ addEventListener('fetch', event => {
 // Configuration options
 const config = {
   proxyDomains: ['tubicf.internetezoo.workers.dev'],
-  separator: '', // Tiszta URL formátumhoz: /https://...
+  separator: '', 
   homepage: true, 
   allowedDomains: [], 
 
@@ -78,18 +78,17 @@ async function getBestEgressColo() {
         if (geoData.country === 'US') {
             bestGeoData = geoData;
             finalColo = colo;
-            break; // Sikeres USA IP esetén azonnal leáll
+            break; 
         }
     }
     
     if (!bestGeoData) {
         // Ha egyetlen USA IP-t sem talált, az első Colo teszteredményét használjuk a kijelzéshez,
-        // de az utolsó próbát használjuk a fetch-hez.
+        // de az utolsó próbát használjuk a fetch-hez (remélve, hogy valamelyik optimalizáció mégis bejön).
         bestGeoData = await getEgressIP(US_COLOS_TO_TRY[US_COLOS_TO_TRY.length - 1]);
         finalColo = US_COLOS_TO_TRY[US_COLOS_TO_TRY.length - 1];
     }
     
-    // Frissítjük a coloUsed mezőt, hogy tükrözze, melyik colot fogjuk használni a fetch-hez
     bestGeoData.coloUsed = finalColo;
     
     return { egressGeoData: bestGeoData, finalColo: finalColo };
@@ -100,26 +99,49 @@ async function handleRequest(request) {
   const url = new URL(request.url)
   const isProxyHost = config.proxyDomains.includes(url.host)
   
-  // 1. Megkeressük a legjobb/kikényszeríthető USA Colot
-  const { egressGeoData, finalColo } = await getBestEgressColo();
-  
+  // --- 1. GEO Checks for Display (Simulált 3-lépéses Útvonal) ---
+  const ingressColo = request.cf.colo || 'VIE';
   const ingressGeoCountry = request.cf.country || 'N/A';
   
-  // IP infó HTML blokk létrehozása
+  // Check 1: Desired Intermediate Hop (LHR - London, GB)
+  const lhrGeo = await getEgressIP('LHR');
+
+  // Check 2: Desired Final Hop (IAD/DFW/stb.) - A legjobb USA Colo keresése
+  const { egressGeoData: finalGeoData, finalColo } = await getBestEgressColo();
+
+
+  // IP infó HTML blokk létrehozása - Részletezve a 3 lépéses utat
+  const getGeoLine = (geo, coloName, targetCountryCode) => {
+      const isTarget = geo.country === targetCountryCode;
+      const color = isTarget ? 'green' : (geo.country === 'HU' || geo.country === 'AT' ? 'red' : 'blue');
+      const status = isTarget ? '✅ Sikeresen elérve' : `❌ Kényszerítés Felülírva (${geo.country})`;
+      return `
+          <li>
+              <strong>${coloName} Hop:</strong> 
+              <span style="color: ${color}; font-weight: bold;">
+                  IP: ${geo.ip} | Régió: ${geo.city}, ${geo.country}
+              </span> 
+              <em style="color:#777;">(${status})</em>
+          </li>
+      `;
+  };
+  
   const ipInfoHtml = `
-    <div style="background-color: #f0f8ff; border: 1px solid #dcdcdc; padding: 10px; margin-bottom: 15px; border-radius: 4px; font-size: 14px; text-align: left;">
-        <h4 style="margin: 0 0 5px 0; color: #333;">Cloudflare Proxy Infó 🌐</h4>
-        <ul style="list-style: none; padding: 0; margin: 0;">
-            <li><strong>Bejövő (Ön ➡️ Worker) Régió:</strong> ${request.cf.colo} (${ingressGeoCountry})</li>
-            <li><strong>Kimenő (Worker ➡️ Cél) IP:</strong> <span style="color: ${egressGeoData.country === 'US' ? 'green' : 'red'}; font-weight: bold;">${egressGeoData.ip}</span></li>
-            <li><strong>Kimenő (Cél) Régió:</strong> ${egressGeoData.city}, ${egressGeoData.country} (Kikényszerített Colo: ${finalColo})</li>
-        </ul>
-        <p style="margin: 5px 0 0 0; font-style: italic; color: #555;">(A kód ${US_COLOS_TO_TRY.length} USA Colot próbált ki a legjobb USA IP eléréséhez. A ${finalColo} Colot használja a fő kéréshez.)</p>
-    </div>
+      <div style="background-color: #f0f8ff; border: 1px solid #dcdcdc; padding: 10px; margin-bottom: 15px; border-radius: 4px; font-size: 14px; text-align: left;">
+          <h4 style="margin: 0 0 5px 0; color: #333;">Cloudflare Proxy Infó 🌐 (Simulált 3-lépéses Útvonal)</h4>
+          <ul style="list-style: none; padding: 0; margin: 0;">
+              <li><strong>Bejövő (Ön ➡️ Worker) Régió:</strong> ${ingressColo} (${ingressGeoCountry})</li>
+              <li style="margin: 5px 0;"><strong>--- Simulált Ugrás 1: London (LHR) ---</strong></li>
+              ${getGeoLine(lhrGeo, 'LHR (London)', 'GB')}
+              <li style="margin: 5px 0;"><strong>--- Simulált Ugrás 2: USA (${finalColo}) ---</strong></li>
+              ${getGeoLine(finalGeoData, `USA (${finalColo})`, 'US')}
+          </ul>
+          <p style="margin: 5px 0 0 0; font-style: italic; color: #555;">(A weboldal a **${finalColo}** Colo-ból (${finalGeoData.country}) töltődik be, ami a legjobb elérhető USA régió volt a tesztek alapján.)</p>
+      </div>
   `;
   
   
-  // -- A fő URL kezelési logika innentől változatlan --
+  // If the request is for the proxy root
   if (isProxyHost && url.pathname === '/') {
     if (config.homepage && !url.search) {
       return getHomePage(ipInfoHtml)
@@ -381,7 +403,7 @@ async function handleRequest(request) {
         rewriter = rewriter.on('style', new StyleElementRewriter(targetURL, currentProxyDomain))
       }
       
-      // 🚨 FONTOS: IP Infó blokk beillesztése a head után
+      // IP Infó blokk beillesztése a head után
       rewriter = rewriter.on('body', new BodyRewriter(ipInfoHtml, targetURL.href));
       
       newResponse = rewriter.transform(newResponse)
@@ -565,8 +587,6 @@ class BodyRewriter {
     `, {html: true});
   }
 }
-
-// -- A LinkRewriter és a segédfüggvények (CSS/JS rewrite) változatlanok --
 
 class LinkRewriter {
   constructor(baseURL, attributeName, proxyDomain) {
@@ -811,132 +831,3 @@ function rewriteJavaScript(js, baseURL, proxyDomain) {
       return `'https://${proxyDomain}/${config.separator}${url}'`
     } catch (e) {
       return match
-    }
-  }).replace(/"(https?:\/\/[^"]+)"/g, function(match, url) {
-    if (url.startsWith(`https://${proxyDomain}/`)) return match
-    try {
-      return `"https://${proxyDomain}/${config.separator}${url}"`
-    } catch (e) {
-      return match
-    }
-  })
-}
-
-
-function getHomePage(ipInfoHtml) {
-  return new Response(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CF Proxy Szolgáltatás</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      max-width: 800px;
-      margin: 0 auto;
-      padding: 20px;
-      text-align: center;
-      line-height: 1.6;
-      color: #333;
-      background-color: #f8f9fa;
-    }
-    .container {
-      background-color: white;
-      padding: 30px;
-      border-radius: 8px;
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-    h1 {
-      color: #2c3e50;
-      margin: 20px 0;
-    }
-    form {
-      margin: 30px 0;
-    }
-    .input-group {
-      width: 100%;
-      display: flex;
-      margin-bottom: 15px;
-    }
-    input[type="text"] {
-      flex: 1;
-      padding: 12px;
-      font-size: 16px;
-      border: 1px solid #ddd;
-      border-radius: 4px 0 0 4px;
-      box-sizing: border-box;
-    }
-    button {
-      background: #3498db;
-      color: white;
-      border: none;
-      padding: 12px 20px;
-      font-size: 16px;
-      border-radius: 0 4px 4px 0;
-      cursor: pointer;
-      transition: background 0.3s;
-    }
-    button:hover {
-      background: #2980b9;
-    }
-    .region-info {
-        font-size: 14px;
-        color: #e74c3c;
-        margin-top: -10px;
-        margin-bottom: 25px;
-        font-weight: bold;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>CF Proxy Szolgáltatás</h1>
-    
-    ${ipInfoHtml} <p class="region-info">A kód megpróbált garantáltan USA IP-t találni a listából.</p>
-
-    <form id="proxyForm" onsubmit="navigateToProxy(event)">
-      <div class="input-group">
-        <input type="text" id="urlInput" placeholder="https://example.com" autocomplete="off">
-        <button type="submit">Access</button>
-      </div>
-    </form>
-  </div>
-  
-  <script>
-    function navigateToProxy(e) {
-      e.preventDefault();
-      const input = document.getElementById('urlInput').value.trim();
-      if (!input) return;
-      const hasScheme = /^https?:\/\//i.test(input);
-      const looksLikeDomain = input.includes('.') && !input.startsWith(' ');
-      let target;
-      if (hasScheme) {
-        target = input;
-      } else if (looksLikeDomain) {
-        target = 'https://' + input;
-      } else {
-        const q = encodeURIComponent(input);
-        target = 'https://duckduckgo.com/?q=' + q;
-      }
-      // A separator üres, így a link tiszta lesz: /https://example.com
-      window.location.href = '/'+ '' + target;
-    }
-    
-    document.getElementById('urlInput').focus();
-    
-    document.getElementById('urlInput').addEventListener('paste', function(e) {
-      setTimeout(function() {
-        const url = e.target.value.trim();
-        e.target.value = url.replace(/\\s+/g, '');
-      }, 0);
-    });
-  </script>
-</body>
-</html>`, {
-    headers: {
-      'Content-Type': 'text/html;charset=UTF-8',
-      'Cache-Control': 'no-cache'
-    }
-  })
-}
