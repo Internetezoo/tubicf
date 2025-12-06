@@ -1,3 +1,6 @@
+// A kimenő IP ellenőrző API
+const IP_CHECK_API = 'https://ipinfo.io/json';
+
 addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request))
 })
@@ -6,7 +9,7 @@ addEventListener('fetch', event => {
 const config = {
   // Support multiple domains, you should modifiy this if you wish to deploy it to your own Cloudflare Worker.
   proxyDomains: ['tubicf.internetezoo.workers.dev'], // <--- MÓDOSÍTVA ERRE A DOMAINRE
-  separator: '------', // Delimiter between worker path and real target URL
+  separator: '', // <--- MÓDOSÍTVA! Az üres string teszi lehetővé a /https://... formátumot.
   homepage: true, // Whether to enable the homepage
   allowedDomains: [], // Domain whitelist, set to [] to allow all
 
@@ -36,21 +39,63 @@ const config = {
   }
 }
 
+/**
+ * Lekéri a Worker kimenő IP-címét és GEO információját a megadott Colo beállítással.
+ * @param {string} colo Az adatközpont kódja, amit kényszeríteni szeretnénk.
+ * @returns {Promise<{ip: string, city: string, country: string}>} A lekérdezett IP adatok.
+ */
+async function getEgressIP(colo) {
+  try {
+    const ipRequest = new Request(IP_CHECK_API, {
+      method: 'GET',
+      headers: { 'User-Agent': 'Cloudflare-Worker-IP-Check' },
+      cf: { colo: colo } // Ugyanaz a kényszerítés
+    });
+    
+    const response = await fetch(ipRequest);
+    const data = await response.json();
+    
+    return {
+      ip: data.ip || 'N/A',
+      city: data.city || 'N/A',
+      country: data.country || 'N/A'
+    };
+  } catch (e) {
+    return { ip: 'API Error', city: 'N/A', country: 'N/A' };
+  }
+}
+
+
 async function handleRequest(request) {
   const url = new URL(request.url)
-  
-  // Check if the current domain is one of our proxy domains
   const isProxyHost = config.proxyDomains.includes(url.host)
+  
+  // Lekérjük a Worker kimenő IP-jét a DFW kényszerítéssel
+  const egressGeoData = await getEgressIP('DFW');
+  const ingressGeoCountry = request.cf.country || 'N/A'; // Bejövő Geo adatok
+  
+  // IP infó HTML blokk létrehozása
+  const ipInfoHtml = `
+    <div style="background-color: #f0f8ff; border: 1px solid #dcdcdc; padding: 10px; margin-bottom: 15px; border-radius: 4px; font-size: 14px; text-align: left;">
+        <h4 style="margin: 0 0 5px 0; color: #333;">Cloudflare Proxy Infó 🌐</h4>
+        <ul style="list-style: none; padding: 0; margin: 0;">
+            <li><strong>Bejövő (Ön ➡️ Worker) Régió:</strong> ${request.cf.colo} (${ingressGeoCountry})</li>
+            <li><strong>Kimenő (Worker ➡️ Cél) IP:</strong> <span style="color: ${egressGeoData.country === 'US' ? 'green' : 'red'}; font-weight: bold;">${egressGeoData.ip}</span></li>
+            <li><strong>Kimenő (Cél) Régió:</strong> ${egressGeoData.city}, ${egressGeoData.country}</li>
+        </ul>
+        <p style="margin: 5px 0 0 0; font-style: italic; color: #555;">(A kimenő IP a kód szerint DFW-re (USA) van kényszerítve.)</p>
+    </div>
+  `;
+  
   
   // If the request is for the proxy root
   if (isProxyHost && url.pathname === '/') {
     // a) When no query-string is present we treat it as a genuine homepage request
     if (config.homepage && !url.search) {
-      return getHomePage()
+      return getHomePage(ipInfoHtml) // Adjuk át az infó blokkot
     }
 
-    /*
-      b) When a query-string exists (e.g. "/?q=search" coming from a proxied
+    /* b) When a query-string exists (e.g. "/?q=search" coming from a proxied
       site like DuckDuckGo) we attempt to determine the intended target by
       inspecting the Referer header, which still contains the full proxied
       URL including the original host. Using that information we rebuild the
@@ -64,6 +109,7 @@ async function handleRequest(request) {
         const rawPath = refURL.pathname.substring(1)
         const sep = config.separator
         let path = rawPath
+        // Mivel a separator üres, ez a rész nem módosul, de a többi kód megtartja
         if (rawPath.startsWith(sep)) {
           path = rawPath.substring(sep.length)
         }
@@ -90,21 +136,22 @@ async function handleRequest(request) {
         const urlParam = url.searchParams.get('url')
         targetURL = new URL(urlParam)
       } else if (url.pathname.startsWith('/')) {
-        // Handle /------https://example.com format
+        // Handle /------https://example.com or /https://example.com format
         const rawPath = url.pathname.substring(1)
         const sep = config.separator
         let path = rawPath
+        
+        // Mivel a separator üres, a path egyből az URL-el kezdődik (https://...)
         if (rawPath.startsWith(sep)) {
           path = rawPath.substring(sep.length)
         }
+        
         if (path.startsWith('http://') || path.startsWith('https://')) {
           targetURL = new URL(path)
         } else if (path) {
           /*
-            Handle relative paths such as "/i.js" or "/next/page" that
-            originate from within the currently proxied site.  We first try to
-            reconstruct the full base URL from the Referer header (if present)
-            so we can resolve the relative path accurately.
+            Handle relative paths...
+            A logika itt is a Referer-re támaszkodik a bázis URL megtalálásához.
           */
           let resolved = null
           const ref = request.headers.get('Referer') || ''
@@ -163,12 +210,7 @@ async function handleRequest(request) {
           }
         } else {
           /*
-            Empty path but we might still have a query-string. Many sites such as
-            DuckDuckGo use root-relative URLs like "https://duckduckgo.com/?q=foo".
-            When a proxied page generates such a link we will receive a request
-            for "/?q=foo". If this happens – and there is no Referer we can use
-            to restore the full URL (handled earlier) – we treat it as a DuckDuckGo
-            search request by default so users aren't thrown back to an error page.
+            Empty path with query-string -> DuckDuckGo search
           */
           if (url.searchParams.has('q')) {
             // Preserve all parameters so that bangs etc. keep working
@@ -268,7 +310,6 @@ async function handleRequest(request) {
     // 🟢 RÉGIÓ KÉNYSZERÍTÉSE AZ USA-ra
     cf: {
       // 'DFW' (Dallas) kényszerítése, hogy a Worker egy USA adatközpontból indítsa a kimenő kérést.
-      // Ez a Cloudflare Workers ajánlott módszere a kimenő régió beállítására.
       colo: 'DFW' 
     }
   })
@@ -287,6 +328,7 @@ async function handleRequest(request) {
           const redirectURL = new URL(location, targetURL)
           // Build new proxy URL, using current accessed domain and custom separator
           const currentProxyDomain = url.host
+          // A separator már üres, a link /https://... lesz
           const newLocation = `https://${currentProxyDomain}/${config.separator}${redirectURL.href}`
           newRespHeaders.set('Location', newLocation)
         } catch (error) {
@@ -360,10 +402,8 @@ async function handleRequest(request) {
         rewriter = rewriter.on('style', new StyleElementRewriter(targetURL, currentProxyDomain))
       }
       
-      // Inject scripts for fallback mechanism if enabled
-      if (config.fallback.enabled && config.fallback.autoReload) {
-        rewriter = rewriter.on('head', new HeadRewriter(targetURL.href))
-      }
+      // 🚨 FONTOS: IP Infó blokk beillesztése a head után
+      rewriter = rewriter.on('body', new BodyRewriter(ipInfoHtml, targetURL.href));
       
       newResponse = rewriter.transform(newResponse)
     }
@@ -476,7 +516,81 @@ async function handleRequest(request) {
   }
 }
 
-// Unified link rewrite handling with better URL handling
+// Rewriter class for inserting the IP info box at the top of the body
+class BodyRewriter {
+  constructor(ipInfoHtml, originalURL) {
+    this.ipInfoHtml = ipInfoHtml;
+    this.originalURL = originalURL;
+  }
+  
+  element(element) {
+    // Inject IP Info at the very beginning of the body
+    element.prepend(this.ipInfoHtml, { html: true });
+
+    // Inject scripts for fallback mechanism (if enabled)
+    if (config.fallback.enabled && config.fallback.autoReload) {
+      this.injectFallbackScripts(element);
+    }
+    
+    // Stop processing body after injection
+    element.onEndTag(endTag => {
+        // Here we ensure that the content is processed correctly
+    });
+  }
+
+  injectFallbackScripts(element) {
+    element.append(`
+      <script>
+        // Add fallback mechanism for images and other resources that fail to load
+        document.addEventListener('DOMContentLoaded', function() {
+          // Fallback for images
+          document.querySelectorAll('img').forEach(img => {
+            if (!img.hasAttribute('data-original-src')) {
+              const originalSrc = new URL(img.src).pathname.slice(1);
+              img.setAttribute('data-original-src', originalSrc);
+              img.setAttribute('onerror', "this.onerror=null;if(this.src!==this.dataset.originalSrc){this.src=this.dataset.originalSrc;}");
+            }
+          });
+          
+          // Enhance behavior for links opening in new tabs
+          document.querySelectorAll('a[target="_blank"]').forEach(link => {
+            let originalUrl = link.href;
+            if (originalUrl.includes(location.host)) {
+              try {
+                // Remove host part to get original proxy path
+                const parts = new URL(originalUrl).pathname.substring(1).split(config.separator);
+                originalUrl = parts.length > 1 ? parts.join(config.separator) : originalUrl;
+              } catch(e) {}
+            }
+            
+            link.addEventListener('click', function(e) {
+              if (e.button !== 0 || e.ctrlKey || e.metaKey) return;
+              e.preventDefault();
+              link.setAttribute('rel', 'noreferrer noopener');
+              window.open(link.href, '_blank');
+            });
+          });
+          
+          // Add Wikipedia specific fixes
+          if (document.querySelector('body.mediawiki')) {
+            document.querySelectorAll('img[data-src]').forEach(img => {
+              if (!img.src && img.dataset.src) {
+                img.src = img.dataset.src;
+              }
+            });
+            document.querySelectorAll('[style*="background"]').forEach(el => {
+              if (el.style.backgroundImage) {
+                el.setAttribute('data-original-bg', el.style.backgroundImage);
+              }
+            });
+          }
+        });
+      </script>
+    `, {html: true});
+  }
+}
+
+// Unified link rewrite handling (separator already set to '')
 class LinkRewriter {
   constructor(baseURL, attributeName, proxyDomain) {
     this.baseURL = baseURL
@@ -492,14 +606,11 @@ class LinkRewriter {
     if (attributeValue.startsWith(`https://${this.proxyDomain}/`)) return
     
     try {
-      // Handle special URL cases for files, media, etc.
       let normalizedValue = attributeValue.trim()
       if (normalizedValue.startsWith('//')) {
-        // Protocol-relative URL
         normalizedValue = this.baseURL.protocol + normalizedValue
       }
       
-      // Build complete URL (handle relative paths)
       const absoluteURL = new URL(normalizedValue, this.baseURL)
       
       // Add onerror fallback for images
@@ -509,7 +620,7 @@ class LinkRewriter {
         element.setAttribute('onerror', `this.onerror=null;if(this.src!==this.dataset.originalSrc){this.src=this.dataset.originalSrc;}`)
       }
       
-      // Rewrite as proxy URL, using current accessed domain and custom separator
+      // Rewrite as proxy URL: /https://example.com/path (mivel a separator: '')
       const newURL = `https://${this.proxyDomain}/${config.separator}${absoluteURL.href}`
       element.setAttribute(this.attributeName, newURL)
     } catch (e) {
@@ -531,40 +642,31 @@ class SrcsetRewriter {
     if (!srcset) return
     
     try {
-      // Split the srcset attribute by commas, taking care of spaces
       const srcsetParts = srcset.split(/,\s+/)
       const newSrcsetParts = srcsetParts.map(part => {
-        // Each part is in format "url size"
         const [url, size] = part.trim().split(/\s+/)
         if (!url) return part
         
-        // Skip data URLs
         if (url.startsWith('data:')) return part
-        
-        // Don't modify already proxied URLs
         if (url.startsWith(`https://${this.proxyDomain}/`)) return part
         
         try {
-          // Handle protocol-relative URLs
           let normalizedUrl = url
           if (normalizedUrl.startsWith('//')) {
             normalizedUrl = this.baseURL.protocol + normalizedUrl
           }
           
-          // Convert to absolute URL
           const absoluteURL = new URL(normalizedUrl, this.baseURL)
           
-          // Create new proxied URL
+          // Create new proxied URL: /https://example.com/path
           const newURL = `https://${this.proxyDomain}/${config.separator}${absoluteURL.href}`
           
-          // Return new URL with size if exists
           return size ? `${newURL} ${size}` : newURL
         } catch (e) {
-          return part // Keep original if can't parse
+          return part 
         }
       })
       
-      // Set the new srcset attribute
       element.setAttribute('srcset', newSrcsetParts.join(', '))
     } catch (e) {
       console.error(`Srcset rewrite error:`, e)
@@ -659,14 +761,12 @@ class StyleElementRewriter {
   }
   
   element(element) {
-    // We need to rewrite all URLs in the style element
     element.onEndTag(endTag => {
       element.replace(endTag.before + endTag.name + endTag.after)
     })
   }
   
   text(text) {
-    // Rewrite URLs in the CSS text content
     const rewrittenCSS = rewriteCSS(text.text, this.baseURL, this.proxyDomain)
     text.replace(rewrittenCSS)
   }
@@ -676,13 +776,10 @@ class StyleElementRewriter {
 function rewriteCSS(css, baseURL, proxyDomain) {
   if (!css) return css
   
-  // First handle @import statements
   css = css.replace(/@import\s+(?:url\(\s*['"]?([^'")]+)['"]?\s*\)|['"]([^'"]+)['"]).*/g, 
     function(match, urlMatch, directMatch) {
       const importUrl = urlMatch || directMatch
-      if (!importUrl) return match
-      if (importUrl.startsWith('data:')) return match
-      if (importUrl.startsWith(`https://${proxyDomain}/`)) return match
+      if (!importUrl || importUrl.startsWith('data:') || importUrl.startsWith(`https://${proxyDomain}/`)) return match
       
       try {
         let normalizedUrl = importUrl
@@ -698,12 +795,9 @@ function rewriteCSS(css, baseURL, proxyDomain) {
     }
   )
   
-  // Handle url() patterns
   css = css.replace(/url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)/g, 
     function(match, quote1, url, quote2) {
-      if (!url) return match
-      if (url.startsWith('data:')) return match
-      if (url.startsWith(`https://${proxyDomain}/`)) return match
+      if (!url || url.startsWith('data:') || url.startsWith(`https://${proxyDomain}/`)) return match
       
       try {
         let normalizedUrl = url
@@ -719,14 +813,11 @@ function rewriteCSS(css, baseURL, proxyDomain) {
     }
   )
   
-  // Handle image-set() CSS function used in some modern websites
   css = css.replace(/image-set\(\s*(?:[^)]|(?:\([^)]*\)))+\)/g, 
     function(match) {
       return match.replace(/url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)/g, 
         function(urlMatch, quote1, url, quote2) {
-          if (!url) return urlMatch
-          if (url.startsWith('data:')) return urlMatch
-          if (url.startsWith(`https://${proxyDomain}/`)) return urlMatch
+          if (!url || url.startsWith('data:') || url.startsWith(`https://${proxyDomain}/`)) return urlMatch
           
           try {
             let normalizedUrl = url
@@ -751,10 +842,6 @@ function rewriteCSS(css, baseURL, proxyDomain) {
 function rewriteJavaScript(js, baseURL, proxyDomain) {
   if (!js) return js
   
-  // This is a very simplified approach and might not catch all cases
-  // A proper solution would require JS parsing, which is complex
-  
-  // Replace absolute URLs in common patterns
   return js.replace(/'(https?:\/\/[^']+)'/g, function(match, url) {
     if (url.startsWith(`https://${proxyDomain}/`)) return match
     try {
@@ -772,73 +859,8 @@ function rewriteJavaScript(js, baseURL, proxyDomain) {
   })
 }
 
-// Inject fallback scripts in the head
-class HeadRewriter {
-  constructor(originalURL) {
-    this.originalURL = originalURL
-  }
-  
-  element(element) {
-    element.append(`
-      <script>
-        // Add fallback mechanism for images and other resources that fail to load
-        document.addEventListener('DOMContentLoaded', function() {
-          // Fallback for images
-          document.querySelectorAll('img').forEach(img => {
-            if (!img.hasAttribute('data-original-src')) {
-              const originalSrc = new URL(img.src).pathname.slice(1);
-              img.setAttribute('data-original-src', originalSrc);
-              img.setAttribute('onerror', "this.onerror=null;if(this.src!==this.dataset.originalSrc){this.src=this.dataset.originalSrc;}");
-            }
-          });
-          
-          // Enhance behavior for links opening in new tabs
-          document.querySelectorAll('a[target="_blank"]').forEach(link => {
-            // Get the original URL from the proxy URL
-            let originalUrl = link.href;
-            if (originalUrl.includes('/${this.originalURL.split('/')[2]}/')) {
-              try {
-                const parts = new URL(originalUrl).pathname.split('/');
-                parts.shift(); // Remove empty first element
-                originalUrl = parts.join('/');
-              } catch(e) {}
-            }
-            
-            // Add event to capture click and modify behavior
-            link.addEventListener('click', function(e) {
-              // Allow middle-click and ctrl+click to work normally
-              if (e.button !== 0 || e.ctrlKey || e.metaKey) return;
-              
-              e.preventDefault();
-              link.setAttribute('rel', 'noreferrer noopener');
-              window.open(link.href, '_blank');
-            });
-          });
-          
-          // Add Wikipedia specific fixes
-          if (document.querySelector('body.mediawiki')) {
-            // Force load lazy images
-            document.querySelectorAll('img[data-src]').forEach(img => {
-              if (!img.src && img.dataset.src) {
-                img.src = img.dataset.src;
-              }
-            });
-            
-            // Fix any inline styles with backgrounds
-            document.querySelectorAll('[style*="background"]').forEach(el => {
-              // Handle any broken background images
-              if (el.style.backgroundImage) {
-                el.setAttribute('data-original-bg', el.style.backgroundImage);
-              }
-            });
-          }
-        });
-      </script>
-    `, {html: true});
-  }
-}
 
-function getHomePage() {
+function getHomePage(ipInfoHtml) {
   return new Response(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -908,7 +930,7 @@ function getHomePage() {
   <div class="container">
     <h1>CF Proxy Szolgáltatás</h1>
     
-    <p class="region-info">Kimenő IP régió kényszerítve: USA (Dallas - DFW)</p>
+    ${ipInfoHtml} <p class="region-info">Kimenő IP régió kényszerítve: USA (Dallas - DFW)</p>
 
     <form id="proxyForm" onsubmit="navigateToProxy(event)">
       <div class="input-group">
@@ -935,7 +957,8 @@ function getHomePage() {
         const q = encodeURIComponent(input);
         target = 'https://duckduckgo.com/?q=' + q;
       }
-      window.location.href = '/'+ '------' + target;
+      // A separator üres, így a link tiszta lesz: /https://example.com
+      window.location.href = '/'+ '' + target;
     }
     
     // Auto-focus on input field
