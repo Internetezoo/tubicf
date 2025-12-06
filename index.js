@@ -1,19 +1,20 @@
 // A kimenő IP ellenőrző API
 const IP_CHECK_API = 'https://ipinfo.io/json';
 
+// USA Adatközpontok listája, amiket végigpróbálunk a legjobb eredmény érdekében
+const US_COLOS_TO_TRY = ['IAD', 'DFW', 'LAX', 'SJC', 'EWR'];
+
 addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request))
 })
 
 // Configuration options
 const config = {
-  // Support multiple domains, you should modifiy this if you wish to deploy it to your own Cloudflare Worker.
-  proxyDomains: ['tubicf.internetezoo.workers.dev'], // <--- MÓDOSÍTVA ERRE A DOMAINRE
-  separator: '', // <--- Tiszta URL formátumhoz beállítva: /https://...
-  homepage: true, // Whether to enable the homepage
-  allowedDomains: [], // Domain whitelist, set to [] to allow all
+  proxyDomains: ['tubicf.internetezoo.workers.dev'],
+  separator: '', // Tiszta URL formátumhoz: /https://...
+  homepage: true, 
+  allowedDomains: [], 
 
-  
   // Browser emulation settings
   browserEmulation: {
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
@@ -41,15 +42,13 @@ const config = {
 
 /**
  * Lekéri a Worker kimenő IP-címét és GEO információját a megadott Colo beállítással.
- * @param {string} colo Az adatközpont kódja, amit kényszeríteni szeretnénk.
- * @returns {Promise<{ip: string, city: string, country: string}>} A lekérdezett IP adatok.
  */
 async function getEgressIP(colo) {
   try {
     const ipRequest = new Request(IP_CHECK_API, {
       method: 'GET',
       headers: { 'User-Agent': 'Cloudflare-Worker-IP-Check' },
-      cf: { colo: colo } // Ugyanaz a kényszerítés
+      cf: { colo: colo } 
     });
     
     const response = await fetch(ipRequest);
@@ -58,11 +57,42 @@ async function getEgressIP(colo) {
     return {
       ip: data.ip || 'N/A',
       city: data.city || 'N/A',
-      country: data.country || 'N/A'
+      country: data.country || 'N/A',
+      coloUsed: colo
     };
   } catch (e) {
-    return { ip: 'API Error', city: 'N/A', country: 'N/A' };
+    return { ip: 'API Error', city: 'N/A', country: 'N/A', coloUsed: colo };
   }
+}
+
+/**
+ * Megpróbál USA IP-címet találni a megadott listán belső teszt hívásokkal.
+ */
+async function getBestEgressColo() {
+    let bestGeoData = null;
+    let finalColo = US_COLOS_TO_TRY[0];
+
+    for (const colo of US_COLOS_TO_TRY) {
+        const geoData = await getEgressIP(colo);
+        
+        if (geoData.country === 'US') {
+            bestGeoData = geoData;
+            finalColo = colo;
+            break; // Sikeres USA IP esetén azonnal leáll
+        }
+    }
+    
+    if (!bestGeoData) {
+        // Ha egyetlen USA IP-t sem talált, az első Colo teszteredményét használjuk a kijelzéshez,
+        // de az utolsó próbát használjuk a fetch-hez.
+        bestGeoData = await getEgressIP(US_COLOS_TO_TRY[US_COLOS_TO_TRY.length - 1]);
+        finalColo = US_COLOS_TO_TRY[US_COLOS_TO_TRY.length - 1];
+    }
+    
+    // Frissítjük a coloUsed mezőt, hogy tükrözze, melyik colot fogjuk használni a fetch-hez
+    bestGeoData.coloUsed = finalColo;
+    
+    return { egressGeoData: bestGeoData, finalColo: finalColo };
 }
 
 
@@ -70,9 +100,10 @@ async function handleRequest(request) {
   const url = new URL(request.url)
   const isProxyHost = config.proxyDomains.includes(url.host)
   
-  // Lekérjük a Worker kimenő IP-jét az IAD kényszerítéssel
-  const egressGeoData = await getEgressIP('IAD'); // 🚨 CSERÉLVE DFW-ről IAD-re
-  const ingressGeoCountry = request.cf.country || 'N/A'; // Bejövő Geo adatok
+  // 1. Megkeressük a legjobb/kikényszeríthető USA Colot
+  const { egressGeoData, finalColo } = await getBestEgressColo();
+  
+  const ingressGeoCountry = request.cf.country || 'N/A';
   
   // IP infó HTML blokk létrehozása
   const ipInfoHtml = `
@@ -81,14 +112,14 @@ async function handleRequest(request) {
         <ul style="list-style: none; padding: 0; margin: 0;">
             <li><strong>Bejövő (Ön ➡️ Worker) Régió:</strong> ${request.cf.colo} (${ingressGeoCountry})</li>
             <li><strong>Kimenő (Worker ➡️ Cél) IP:</strong> <span style="color: ${egressGeoData.country === 'US' ? 'green' : 'red'}; font-weight: bold;">${egressGeoData.ip}</span></li>
-            <li><strong>Kimenő (Cél) Régió:</strong> ${egressGeoData.city}, ${egressGeoData.country}</li>
+            <li><strong>Kimenő (Cél) Régió:</strong> ${egressGeoData.city}, ${egressGeoData.country} (Kikényszerített Colo: ${finalColo})</li>
         </ul>
-        <p style="margin: 5px 0 0 0; font-style: italic; color: #555;">(A kimenő IP a kód szerint IAD-ra (USA) van kényszerítve.)</p>
+        <p style="margin: 5px 0 0 0; font-style: italic; color: #555;">(A kód ${US_COLOS_TO_TRY.length} USA Colot próbált ki a legjobb USA IP eléréséhez. A ${finalColo} Colot használja a fő kéréshez.)</p>
     </div>
   `;
   
   
-  // If the request is for the proxy root
+  // -- A fő URL kezelési logika innentől változatlan --
   if (isProxyHost && url.pathname === '/') {
     if (config.homepage && !url.search) {
       return getHomePage(ipInfoHtml)
@@ -110,9 +141,7 @@ async function handleRequest(request) {
           const targetStr = `${base.origin}${url.search}`
           url.pathname = '/' + config.separator + targetStr
         }
-      } catch (_) {
-        /* ignore – fallback handled later */
-      }
+      } catch (_) {}
     }
   }
 
@@ -199,7 +228,6 @@ async function handleRequest(request) {
       targetURL = url
     }
     
-    // Check domain whitelist
     if (config.allowedDomains.length > 0) {
       const isAllowed = config.allowedDomains.some(domain => 
         targetURL.hostname === domain || targetURL.hostname.endsWith(`.${domain}`)
@@ -220,17 +248,12 @@ async function handleRequest(request) {
     config.specialSites.wikipedia.domains.some(domain => 
       targetURL.hostname.endsWith(domain));
 
-  // Prepare request headers to emulate a real browser
+  // Prepare request headers
   let newHeaders = new Headers()
   
-  // Copy select headers from the original request
   const headersToKeep = [
-    'cookie', 
-    'range',
-    'if-none-match',
-    'if-modified-since',
-    'content-type',
-    'content-length'
+    'cookie', 'range', 'if-none-match', 'if-modified-since',
+    'content-type', 'content-length'
   ]
   
   headersToKeep.forEach(header => {
@@ -262,7 +285,6 @@ async function handleRequest(request) {
   newHeaders.set('Origin', targetURL.origin)
   newHeaders.set('Referer', targetURL.href)
   
-  // Check if this is XHR/fetch request from the browser
   const isXHR = request.headers.get('X-Requested-With') === 'XMLHttpRequest' || 
                 request.headers.get('Accept')?.includes('application/json');
   
@@ -275,11 +297,10 @@ async function handleRequest(request) {
     method: request.method,
     headers: newHeaders,
     body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : null,
-    redirect: 'manual', // Handle redirects manually
-    // 🟢 RÉGIÓ KÉNYSZERÍTÉSE AZ USA-ra
+    redirect: 'manual', 
+    // 🟢 A legjobb talált (vagy kényszerített) Colot használjuk
     cf: {
-      // 'IAD' (Ashburn) kényszerítése az USA adatközpont használatára.
-      colo: 'IAD' // 🚨 CSERÉLVE DFW-ről IAD-re
+      colo: finalColo 
     }
   })
 
@@ -303,7 +324,7 @@ async function handleRequest(request) {
       }
     }
     
-    // Copy all response cookies
+    // Cookie-k és CORS kezelése
     const setCookieHeaders = response.headers.getAll ? response.headers.getAll('Set-Cookie') : null
     if (setCookieHeaders) {
       setCookieHeaders.forEach(cookie => {
@@ -311,7 +332,6 @@ async function handleRequest(request) {
       })
     }
     
-    // Modify CORS related headers
     newRespHeaders.delete('Content-Security-Policy')
     newRespHeaders.delete('Content-Security-Policy-Report-Only')
     newRespHeaders.delete('X-Frame-Options')
@@ -321,14 +341,12 @@ async function handleRequest(request) {
     newRespHeaders.set('Access-Control-Allow-Headers', '*')
     newRespHeaders.set('Access-Control-Allow-Credentials', 'true')
     
-    // Create new response object
     let newResponse = new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
       headers: newRespHeaders
     })
     
-    // Get content type
     const contentType = newRespHeaders.get('Content-Type') || ''
     
     // Rewrite links in HTML content
@@ -368,7 +386,7 @@ async function handleRequest(request) {
       
       newResponse = rewriter.transform(newResponse)
     }
-    // Handle CSS content separately to rewrite URLs
+    // CSS tartalom átírása
     else if (contentType.includes('text/css') || contentType.includes('application/x-stylesheet')) {
       const currentProxyDomain = url.host
       const cssText = await response.text()
@@ -380,7 +398,7 @@ async function handleRequest(request) {
         headers: newRespHeaders
       })
     }
-    // Handle JavaScript to rewrite URLs directly embedded in code
+    // JavaScript URL átírás
     else if (contentType.includes('application/javascript') || contentType.includes('text/javascript')) {
       const currentProxyDomain = url.host
       const jsText = await response.text()
@@ -548,7 +566,8 @@ class BodyRewriter {
   }
 }
 
-// Unified link rewrite handling (separator already set to '')
+// -- A LinkRewriter és a segédfüggvények (CSS/JS rewrite) változatlanok --
+
 class LinkRewriter {
   constructor(baseURL, attributeName, proxyDomain) {
     this.baseURL = baseURL
@@ -560,7 +579,6 @@ class LinkRewriter {
     const attributeValue = element.getAttribute(this.attributeName)
     if (!attributeValue || attributeValue.startsWith('data:') || attributeValue.startsWith('javascript:')) return
     
-    // Don't modify already proxied URLs
     if (attributeValue.startsWith(`https://${this.proxyDomain}/`)) return
     
     try {
@@ -571,24 +589,20 @@ class LinkRewriter {
       
       const absoluteURL = new URL(normalizedValue, this.baseURL)
       
-      // Add onerror fallback for images
       if (this.attributeName === 'src' && element.tagName === 'img') {
         const originalSrc = absoluteURL.href
         element.setAttribute('data-original-src', originalSrc)
         element.setAttribute('onerror', `this.onerror=null;if(this.src!==this.dataset.originalSrc){this.src=this.dataset.originalSrc;}`)
       }
       
-      // Rewrite as proxy URL: /https://example.com/path (mivel a separator: '')
       const newURL = `https://${this.proxyDomain}/${config.separator}${absoluteURL.href}`
       element.setAttribute(this.attributeName, newURL)
     } catch (e) {
-      // If URL is invalid, keep it as is
       console.error(`URL rewrite error [${attributeValue}]:`, e)
     }
   }
 }
 
-// Handle srcset attribute used in responsive images
 class SrcsetRewriter {
   constructor(baseURL, proxyDomain) {
     this.baseURL = baseURL
@@ -616,7 +630,6 @@ class SrcsetRewriter {
           
           const absoluteURL = new URL(normalizedUrl, this.baseURL)
           
-          // Create new proxied URL: /https://example.com/path
           const newURL = `https://${this.proxyDomain}/${config.separator}${absoluteURL.href}`
           
           return size ? `${newURL} ${size}` : newURL
@@ -632,7 +645,6 @@ class SrcsetRewriter {
   }
 }
 
-// Handle meta refresh and other meta tags with URLs
 class MetaContentRewriter {
   constructor(baseURL, proxyDomain) {
     this.baseURL = baseURL
@@ -644,7 +656,6 @@ class MetaContentRewriter {
     const content = element.getAttribute('content')
     
     if (httpEquiv && httpEquiv.toLowerCase() === 'refresh' && content) {
-      // Handle meta refresh redirects
       const parts = content.split(';url=')
       if (parts.length === 2) {
         try {
@@ -657,7 +668,6 @@ class MetaContentRewriter {
       }
     }
     
-    // Handle Open Graph and other meta tags
     const property = element.getAttribute('property') || element.getAttribute('name')
     if (property && content && 
        (property.includes('og:image') || 
@@ -674,7 +684,6 @@ class MetaContentRewriter {
   }
 }
 
-// Handle base tag to ensure relative URLs work correctly
 class BaseTagRewriter {
   constructor(baseURL, proxyDomain) {
     this.baseURL = baseURL
@@ -695,7 +704,6 @@ class BaseTagRewriter {
   }
 }
 
-// Handle style attributes with URLs
 class StyleAttributeRewriter {
   constructor(baseURL, proxyDomain) {
     this.baseURL = baseURL
@@ -711,7 +719,6 @@ class StyleAttributeRewriter {
   }
 }
 
-// Handle style elements with CSS content
 class StyleElementRewriter {
   constructor(baseURL, proxyDomain) {
     this.baseURL = baseURL
@@ -730,7 +737,6 @@ class StyleElementRewriter {
   }
 }
 
-// Helper function to rewrite URLs in CSS with improved handling
 function rewriteCSS(css, baseURL, proxyDomain) {
   if (!css) return css
   
@@ -796,7 +802,6 @@ function rewriteCSS(css, baseURL, proxyDomain) {
   return css
 }
 
-// Basic JavaScript URL rewriting
 function rewriteJavaScript(js, baseURL, proxyDomain) {
   if (!js) return js
   
@@ -888,7 +893,7 @@ function getHomePage(ipInfoHtml) {
   <div class="container">
     <h1>CF Proxy Szolgáltatás</h1>
     
-    ${ipInfoHtml} <p class="region-info">Kimenő IP régió kényszerítve: USA (Ashburn - IAD)</p>
+    ${ipInfoHtml} <p class="region-info">A kód megpróbált garantáltan USA IP-t találni a listából.</p>
 
     <form id="proxyForm" onsubmit="navigateToProxy(event)">
       <div class="input-group">
@@ -911,7 +916,6 @@ function getHomePage(ipInfoHtml) {
       } else if (looksLikeDomain) {
         target = 'https://' + input;
       } else {
-        // Treat as search keyword
         const q = encodeURIComponent(input);
         target = 'https://duckduckgo.com/?q=' + q;
       }
@@ -919,12 +923,9 @@ function getHomePage(ipInfoHtml) {
       window.location.href = '/'+ '' + target;
     }
     
-    // Auto-focus on input field
     document.getElementById('urlInput').focus();
     
-    // Handle paste events to clean URLs
     document.getElementById('urlInput').addEventListener('paste', function(e) {
-      // Let the paste happen naturally, then clean it after
       setTimeout(function() {
         const url = e.target.value.trim();
         e.target.value = url.replace(/\\s+/g, '');
