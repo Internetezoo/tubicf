@@ -932,7 +932,7 @@ function getHomePage() {
     
     <p class="example">
     Examples: 
-    <a href="https://tubicf.internetezoo.workers.dev/------https://www.tsukuba.ac.jp/">tsukuba.ac.jp</a>, 
+    <a href="https://tubicf.internetezoo.workers.dev/------https://www.tsukuba.ac.jp/">tsukubax.ac.jp</a>, 
     <a href="https://tubicf.internetezoo.workers.dev/------https://www.jlu.edu.cn/">jlu.edu.cn</a>, 
     <a href="https://tubicf.internetezoo.workers.dev/------https://news.ycombinator.com">ycombinator.com</a>, 
     <a href="https://tubicf.internetezoo.workers.dev/------https://www.example.com">example.com</a>, 
