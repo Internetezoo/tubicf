@@ -1,11 +1,11 @@
-AddEventListener('fetch', event => {
+addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request))
 })
 
 // Configuration options
 const config = {
   // Support multiple domains, you should modifiy this if you wish to deploy it to your own Cloudflare Worker.
-  proxyDomains: ['tubicf.internetezoo.workers.dev'], // <--- MÓDOSÍTVA ERRE A DOMAINRE
+  proxyDomains: ['tubicf.internetezoo.workers.dev'], // MÓDOSÍTVA AZ ÖN DOMAINJÉRE
   separator: '------', // Delimiter between worker path and real target URL
   homepage: true, // Whether to enable the homepage
   allowedDomains: [], // Domain whitelist, set to [] to allow all
@@ -468,7 +468,7 @@ async function handleRequest(request) {
       }
     })
   }
-}
+} // <--- EZ ZÁRJA LE A handleRequest(request) FÜGGVÉNYT
 
 // Unified link rewrite handling with better URL handling
 class LinkRewriter {
@@ -499,7 +499,386 @@ class LinkRewriter {
       // Add onerror fallback for images
       if (this.attributeName === 'src' && element.tagName === 'img') {
         const originalSrc = absoluteURL.href
-        element.setAtt
- }
+        element.setAttribute('data-original-src', originalSrc)
+        element.setAttribute('onerror', `this.onerror=null;if(this.src!==this.dataset.originalSrc){this.src=this.dataset.originalSrc;}`)
+      }
+      
+      // Rewrite as proxy URL, using current accessed domain and custom separator
+      const newURL = `https://${this.proxyDomain}/${config.separator}${absoluteURL.href}`
+      element.setAttribute(this.attributeName, newURL)
+    } catch (e) {
+      // If URL is invalid, keep it as is
+      console.error(`URL rewrite error [${attributeValue}]:`, e)
+    }
+  }
+}
+
+// Handle srcset attribute used in responsive images
+class SrcsetRewriter {
+  constructor(baseURL, proxyDomain) {
+    this.baseURL = baseURL
+    this.proxyDomain = proxyDomain
+  }
+  
+  element(element) {
+    const srcset = element.getAttribute('srcset')
+    if (!srcset) return
+    
+    try {
+      // Split the srcset attribute by commas, taking care of spaces
+      const srcsetParts = srcset.split(/,\s+/)
+      const newSrcsetParts = srcsetParts.map(part => {
+        // Each part is in format "url size"
+        const [url, size] = part.trim().split(/\s+/)
+        if (!url) return part
+        
+        // Skip data URLs
+        if (url.startsWith('data:')) return part
+        
+        // Don't modify already proxied URLs
+        if (url.startsWith(`https://${this.proxyDomain}/`)) return part
+        
+        try {
+          // Handle protocol-relative URLs
+          let normalizedUrl = url
+          if (normalizedUrl.startsWith('//')) {
+            normalizedUrl = this.baseURL.protocol + normalizedUrl
+          }
+          
+          // Convert to absolute URL
+          const absoluteURL = new URL(normalizedUrl, this.baseURL)
+          
+          // Create new proxied URL
+          const newURL = `https://${this.proxyDomain}/${config.separator}${absoluteURL.href}`
+          
+          // Return new URL with size if exists
+          return size ? `${newURL} ${size}` : newURL
+        } catch (e) {
+          return part // Keep original if can't parse
+        }
+      })
+      
+      // Set the new srcset attribute
+      element.setAttribute('srcset', newSrcsetParts.join(', '))
+    } catch (e) {
+      console.error(`Srcset rewrite error:`, e)
+    }
+  }
+}
+
+// Handle meta refresh and other meta tags with URLs
+class MetaContentRewriter {
+  constructor(baseURL, proxyDomain) {
+    this.baseURL = baseURL
+    this.proxyDomain = proxyDomain
+  }
+  
+  element(element) {
+    const httpEquiv = element.getAttribute('http-equiv')
+    const content = element.getAttribute('content')
+    
+    if (httpEquiv && httpEquiv.toLowerCase() === 'refresh' && content) {
+      // Handle meta refresh redirects
+      const parts = content.split(';url=')
+      if (parts.length === 2) {
+        try {
+          const url = new URL(parts[1], this.baseURL)
+          const newURL = `https://${this.proxyDomain}/${config.separator}${url.href}`
+          element.setAttribute('content', `${parts[0]};url=${newURL}`)
+        } catch (e) {
+          console.error(`Meta refresh URL rewrite error:`, e)
+        }
+      }
+    }
+    
+    // Handle Open Graph and other meta tags
+    const property = element.getAttribute('property') || element.getAttribute('name')
+    if (property && content && 
+       (property.includes('og:image') || 
+        property.includes('og:url') || 
+        property.includes('twitter:image'))) {
+      try {
+        const url = new URL(content, this.baseURL)
+        const newURL = `https://${this.proxyDomain}/${config.separator}${url.href}`
+        element.setAttribute('content', newURL)
+      } catch (e) {
+        console.error(`Meta tag URL rewrite error:`, e)
+      }
+    }
+  }
+}
+
+// Handle base tag to ensure relative URLs work correctly
+class BaseTagRewriter {
+  constructor(baseURL, proxyDomain) {
+    this.baseURL = baseURL
+    this.proxyDomain = proxyDomain
+  }
+  
+  element(element) {
+    const href = element.getAttribute('href')
+    if (href) {
+      try {
+        const url = new URL(href, this.baseURL)
+        const newURL = `https://${this.proxyDomain}/${config.separator}${url.href}`
+        element.setAttribute('href', newURL)
+      } catch (e) {
+        console.error(`Base tag URL rewrite error:`, e)
+      }
+    }
+  }
+}
+
+// Handle style attributes with URLs
+class StyleAttributeRewriter {
+  constructor(baseURL, proxyDomain) {
+    this.baseURL = baseURL
+    this.proxyDomain = proxyDomain
+  }
+  
+  element(element) {
+    const style = element.getAttribute('style')
+    if (!style) return
+    
+    const rewrittenStyle = rewriteCSS(style, this.baseURL, this.proxyDomain)
+    element.setAttribute('style', rewrittenStyle)
+  }
+}
+
+// Handle style elements with CSS content
+class StyleElementRewriter {
+  constructor(baseURL, proxyDomain) {
+    this.baseURL = baseURL
+    this.proxyDomain = proxyDomain
+  }
+  
+  element(element) {
+    // We need to rewrite all URLs in the style element
+    element.onEndTag(endTag => {
+      element.replace(endTag.before + endTag.name + endTag.after)
+    })
+  }
+  
+  text(text) {
+    // Rewrite URLs in the CSS text content
+    const rewrittenCSS = rewriteCSS(text.text, this.baseURL, this.proxyDomain)
+    text.replace(rewrittenCSS)
+  }
+}
+
+// Helper function to rewrite URLs in CSS with improved handling
+function rewriteCSS(css, baseURL, proxyDomain) {
+  if (!css) return css
+  
+  // First handle @import statements
+  css = css.replace(/@import\s+(?:url\(\s*['"]?([^'")]+)['"]?\s*\)|['"]([^'"]+)['"]).*/g, 
+    function(match, urlMatch, directMatch) {
+      const importUrl = urlMatch || directMatch
+      if (!importUrl) return match
+      if (importUrl.startsWith('data:')) return match
+      if (importUrl.startsWith(`https://${proxyDomain}/`)) return match
+      
+      try {
+        let normalizedUrl = importUrl
+        if (normalizedUrl.startsWith('//')) {
+          normalizedUrl = baseURL.protocol + normalizedUrl
+        }
+        
+        const absoluteURL = new URL(normalizedUrl, baseURL)
+        return match.replace(importUrl, `https://${proxyDomain}/${config.separator}${absoluteURL.href}`)
+      } catch (e) {
+        return match
+      }
+    }
+  )
+  
+  // Handle url() patterns
+  css = css.replace(/url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)/g, 
+    function(match, quote1, url, quote2) {
+      if (!url) return match
+      if (url.startsWith('data:')) return match
+      if (url.startsWith(`https://${proxyDomain}/`)) return match
+      
+      try {
+        let normalizedUrl = url
+        if (normalizedUrl.startsWith('//')) {
+          normalizedUrl = baseURL.protocol + normalizedUrl
+        }
+        
+        const absoluteURL = new URL(normalizedUrl, baseURL)
+        return `url(${quote1}https://${proxyDomain}/${config.separator}${absoluteURL.href}${quote2})`
+      } catch (e) {
+        return match
+      }
+    }
+  )
+  
+  // Handle image-set() CSS function used in some modern websites
+  css = css.replace(/image-set\(\s*(?:[^)]|(?:\([^)]*\)))+\)/g, 
+    function(match) {
+      return match.replace(/url\(\s*(['"]?)([^'")]+)(['"]?)\s*\)/g, 
+        function(urlMatch, quote1, url, quote2) {
+          if (!url) return urlMatch
+          if (url.startsWith('data:')) return urlMatch
+          if (url.startsWith(`https://${proxyDomain}/`)) return urlMatch
+          
+          try {
+            let normalizedUrl = url
+            if (normalizedUrl.startsWith('//')) {
+              normalizedUrl = baseURL.protocol + normalizedUrl
+            }
+            
+            const absoluteURL = new URL(normalizedUrl, baseURL)
+            return `url(${quote1}https://${proxyDomain}/${config.separator}${absoluteURL.href}${quote2})`
+          } catch (e) {
+            return urlMatch
+          }
+        }
+      )
+    }
+  )
+  
+  return css
+}
+
+// Basic JavaScript URL rewriting
+function rewriteJavaScript(js, baseURL, proxyDomain) {
+  if (!js) return js
+  
+  // This is a very simplified approach and might not catch all cases
+  // A proper solution would require JS parsing, which is complex
+  
+  // Replace absolute URLs in common patterns
+  return js.replace(/'(https?:\/\/[^']+)'/g, function(match, url) {
+    if (url.startsWith(`https://${proxyDomain}/`)) return match
+    try {
+      return `'https://${proxyDomain}/${config.separator}${url}'`
+    } catch (e) {
+      return match
+    }
+  }).replace(/"(https?:\/\/[^"]+)"/g, function(match, url) {
+    if (url.startsWith(`https://${proxyDomain}/`)) return match
+    try {
+      return `"https://${proxyDomain}/${config.separator}${url}"`
+    } catch (e) {
+      return match
+    }
   })
 }
+
+// Inject fallback scripts in the head
+class HeadRewriter {
+  constructor(originalURL) {
+    this.originalURL = originalURL
+  }
+  
+  element(element) {
+    element.append(`
+      <script>
+        // Add fallback mechanism for images and other resources that fail to load
+        document.addEventListener('DOMContentLoaded', function() {
+          // Fallback for images
+          document.querySelectorAll('img').forEach(img => {
+            if (!img.hasAttribute('data-original-src')) {
+              const originalSrc = new URL(img.src).pathname.slice(1);
+              img.setAttribute('data-original-src', originalSrc);
+              img.setAttribute('onerror', "this.onerror=null;if(this.src!==this.dataset.originalSrc){this.src=this.dataset.originalSrc;}");
+            }
+          });
+          
+          // Enhance behavior for links opening in new tabs
+          document.querySelectorAll('a[target="_blank"]').forEach(link => {
+            // Get the original URL from the proxy URL
+            let originalUrl = link.href;
+            if (originalUrl.includes('/${this.originalURL.split('/')[2]}/')) {
+              try {
+                const parts = new URL(originalUrl).pathname.split('/');
+                parts.shift(); // Remove empty first element
+                originalUrl = parts.join('/');
+              } catch(e) {}
+            }
+            
+            // Add event to capture click and modify behavior
+            link.addEventListener('click', function(e) {
+              // Allow middle-click and ctrl+click to work normally
+              if (e.button !== 0 || e.ctrlKey || e.metaKey) return;
+              
+              e.preventDefault();
+              link.setAttribute('rel', 'noreferrer noopener');
+              window.open(link.href, '_blank');
+            });
+          });
+          
+          // Add Wikipedia specific fixes
+          if (document.querySelector('body.mediawiki')) {
+            // Force load lazy images
+            document.querySelectorAll('img[data-src]').forEach(img => {
+              if (!img.src && img.dataset.src) {
+                img.src = img.dataset.src;
+              }
+            });
+            
+            // Fix any inline styles with backgrounds
+            document.querySelectorAll('[style*="background"]').forEach(el => {
+              // Handle any broken background images
+              if (el.style.backgroundImage) {
+                el.setAttribute('data-original-bg', el.style.backgroundImage);
+              }
+            });
+          }
+        });
+      </script>
+    `, {html: true});
+  }
+}
+
+function getHomePage() {
+  return new Response(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web Proxy Service</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      text-align: center;
+      line-height: 1.6;
+      color: #333;
+      background-color: #f8f9fa;
+    }
+    .container {
+      background-color: white;
+      padding: 30px;
+      border-radius: 8px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    h1 {
+      color: #2c3e50;
+      margin: 20px 0;
+    }
+    form {
+      margin: 30px 0;
+    }
+    .input-group {
+      width: 100%;
+      display: flex;
+      margin-bottom: 15px;
+    }
+    input[type="text"] {
+      flex: 1;
+      padding: 12px;
+      font-size: 16px;
+      border: 1px solid #ddd;
+      border-radius: 4px 0 0 4px;
+      box-sizing: border-box;
+    }
+    button {
+      background: #3498db;
+      color: white;
+      border: none;
+      padding: 12px 20px;
+      font-size: 16px;
