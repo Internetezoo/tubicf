@@ -265,6 +265,10 @@ async function handleRequest(request) {
     headers: newHeaders,
     body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : null,
     redirect: 'manual', // Handle redirects manually
+    // 🇺🇸 FORCE US EXIT LOCATION - EZ A JAVÍTÁS
+    cf: {
+      colo: 'sjc' // Kényszeríti a Cloudflare-t a San Jose (USA) adatközpont használatára
+    }
   })
 
   try {
@@ -468,7 +472,7 @@ async function handleRequest(request) {
       }
     })
   }
-} // <--- EZ ZÁRJA LE A handleRequest(request) FÜGGVÉNYT
+} 
 
 // Unified link rewrite handling with better URL handling
 class LinkRewriter {
@@ -985,4 +989,4 @@ function getHomePage() {
       'Cache-Control': 'no-cache'
     }
   })
-} // <--- EZ ZÁRJA LE A getHomePage() FÜGGVÉNYT
+} 
